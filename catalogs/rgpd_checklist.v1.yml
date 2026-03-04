@@ -1,0 +1,22 @@
+version: v1
+framework: RGPD
+checklist:
+  - article_or_principle: ART5
+    question: "¿Existe base documental y principio de minimización aplicado?"
+    expected_evidence: "Política de privacidad y registros de tratamiento."
+    tags: [privacy, governance]
+    severity: medium
+    mapped_controls: [ISO-A.5.1, ENS-ORG-1]
+    evidence_requirements:
+      - manual.policy_document
+    evaluator_key: manual_policy_uploaded
+  - article_or_principle: ART32
+    question: "¿Se aplican medidas técnicas y organizativas apropiadas?"
+    expected_evidence: "Controles de acceso y seguridad operacional."
+    tags: [security, technical]
+    severity: high
+    mapped_controls: [ISO-A.8.2, ENS-OP-ACC]
+    evidence_requirements:
+      - github.repository_settings
+      - google.users_groups
+    evaluator_key: github_checks

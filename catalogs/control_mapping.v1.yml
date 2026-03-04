@@ -1,0 +1,14 @@
+version: v1
+mappings:
+  - control_id: ISO-A.5.1
+    requirement_refs: [ENS-ORG-1, RGPD-ART5]
+  - control_id: ISO-A.8.2
+    requirement_refs: [ENS-OP-ACC, RGPD-ART32]
+  - control_id: ENS-ORG-1
+    requirement_refs: [ISO-A.5.1, RGPD-ART5]
+  - control_id: ENS-OP-ACC
+    requirement_refs: [ISO-A.8.2, RGPD-ART32]
+  - control_id: RGPD-ART5
+    requirement_refs: [ISO-A.5.1, ENS-ORG-1]
+  - control_id: RGPD-ART32
+    requirement_refs: [ISO-A.8.2, ENS-OP-ACC]

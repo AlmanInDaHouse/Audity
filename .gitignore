@@ -1,0 +1,28 @@
+# Ignore local env and build artifacts
+.env
+.env.*
+!.env.example
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+node_modules/
+.next/
+out/
+*.log
+.DS_Store
+.vscode/
+.idea/
+
+# Python virtual envs
+.venv/
+venv/
+
+# Temporal / local artifacts
+.temporal/
+
+# Rust
+agent-rust/target/

@@ -1,0 +1,23 @@
+version: v1
+framework: ENS
+measures:
+  - id: ENS-ORG-1
+    title: Política de seguridad
+    description: "[PLACEHOLDER] Política y marco organizativo ENS."
+    tags: [org, policy]
+    level: base
+    severity: medium
+    mapped_controls: [ISO-A.5.1, RGPD-ART5]
+    evidence_requirements:
+      - manual.policy_document
+    evaluator_key: manual_policy_uploaded
+  - id: ENS-OP-ACC
+    title: Control de acceso
+    description: "[PLACEHOLDER] Gestión de identidad y acceso."
+    tags: [access, ops]
+    level: reforzado
+    severity: high
+    mapped_controls: [ISO-A.8.2, RGPD-ART32]
+    evidence_requirements:
+      - google.users_groups
+    evaluator_key: google_users_groups

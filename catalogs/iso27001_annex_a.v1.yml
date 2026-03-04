@@ -1,0 +1,24 @@
+version: v1
+framework: ISO27001
+controls:
+  - id: ISO-A.5.1
+    title: Information security policies
+    description: "[PLACEHOLDER] Política de seguridad documentada y aprobada."
+    tags: [policy, governance]
+    level: base
+    severity: medium
+    mapped_controls: [ENS-ORG-1, RGPD-ART5]
+    evidence_requirements:
+      - github.repository_settings
+      - manual.policy_document
+    evaluator_key: github_branch_protection
+  - id: ISO-A.8.2
+    title: Privileged access rights
+    description: "[PLACEHOLDER] Gestión de accesos privilegiados."
+    tags: [iam, access]
+    level: base
+    severity: high
+    mapped_controls: [ENS-OP-ACC, RGPD-ART32]
+    evidence_requirements:
+      - google.users_groups
+    evaluator_key: google_users_groups
