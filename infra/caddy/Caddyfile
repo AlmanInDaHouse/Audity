@@ -6,6 +6,7 @@ https://localhost {
   tls internal
 
   handle /api/* {
+    uri strip_prefix /api
     reverse_proxy api:8000
   }
 
