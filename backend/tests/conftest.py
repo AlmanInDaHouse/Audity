@@ -13,7 +13,7 @@ os.environ.setdefault('APP_ENV', 'test')
 os.environ.setdefault('WORKFLOW_MODE', 'inline')
 os.environ.setdefault('STORAGE_BACKEND', 'memory')
 os.environ.setdefault('AUTO_CREATE_SCHEMA', 'false')
-os.environ['DATABASE_URL'] = 'sqlite+aiosqlite:///./audity_test.db'
+os.environ['DATABASE_URL'] = 'sqlite+aiosqlite:////tmp/audity_test.db'
 
 from app.db import Base, SessionLocal, engine
 from app.main import app
