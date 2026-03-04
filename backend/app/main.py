@@ -47,6 +47,14 @@ from app.temporal_workflow import AuditRunWorkflowInput
 from app.workflow_launcher import launch_audit_workflow
 
 settings = get_settings()
+ALLOWED_UPLOAD_MIME_TYPES = {
+    'application/pdf',
+    'text/plain',
+    'text/csv',
+    'application/json',
+    'image/png',
+    'image/jpeg',
+}
 
 app = FastAPI(title='Audity API', version='0.1.0')
 app.add_middleware(
@@ -638,6 +646,7 @@ async def list_remediation_tasks(
 @app.post('/projects/{project_id}/evidence/upload')
 async def upload_evidence(
     project_id: str,
+    request: Request,
     file: UploadFile = File(...),
     item_type: str = Form(default='manual_upload'),
     metadata_json: str = Form(default='{}'),
@@ -645,11 +654,16 @@ async def upload_evidence(
     ctx: UserContext = Depends(require_roles('org_admin', 'auditor')),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
+    await enforce_sensitive_limit(request)
     await _project_for_org(db, project_id, ctx.org_id)
 
     contents = await file.read()
     if len(contents) > 20 * 1024 * 1024:
         raise HTTPException(status_code=413, detail='File too large (max 20MB for MVP)')
+
+    content_type = (file.content_type or 'application/octet-stream').split(';', 1)[0].strip().lower()
+    if content_type not in ALLOWED_UPLOAD_MIME_TYPES:
+        raise HTTPException(status_code=415, detail='Unsupported media type')
 
     try:
         metadata = json.loads(metadata_json)
@@ -658,7 +672,7 @@ async def upload_evidence(
 
     key = f'evidence/{ctx.org_id}/{project_id}/{uuid.uuid4()}-{file.filename}'
     store = get_object_store()
-    stored = await store.put_bytes(key, contents, file.content_type or 'application/octet-stream')
+    stored = await store.put_bytes(key, contents, content_type)
 
     evidence = EvidenceItem(
         org_id=ctx.org_id,
@@ -669,7 +683,7 @@ async def upload_evidence(
         name=file.filename or 'uploaded-file',
         object_key=stored.key,
         sha256=stored.sha256,
-        metadata_json={**metadata, 'content_type': file.content_type, 'size': stored.size},
+        metadata_json={**metadata, 'content_type': content_type, 'size': stored.size},
         created_by_user_id=ctx.user_id,
     )
     db.add(evidence)
