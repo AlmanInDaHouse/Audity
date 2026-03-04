@@ -1,0 +1,26 @@
+[project]
+name = "audity-worker"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+  "audity-backend",
+  "temporalio>=1.10.0"
+]
+
+[tool.uv.sources]
+audity-backend = { path = "../backend", editable = true }
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3.4",
+  "pytest-asyncio>=0.25.3",
+  "ruff>=0.11.0",
+  "mypy>=1.15.0"
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["worker_service"]
