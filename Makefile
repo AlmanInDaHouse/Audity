@@ -22,6 +22,7 @@ lint:
 	docker compose exec api uv run mypy
 
 test:
+	$(MAKE) lint
 	docker compose exec api uv run pytest -q
 
 demo-audit:
