@@ -196,3 +196,23 @@ docker compose exec postgres psql -U audity -d audity -c "SELECT id, provider, n
 **PASS**
 
 Motivo: todos los puntos A->G fueron verificados con comandos reproducibles y evidencia; los huecos detectados se corrigieron con commits pequenos, y el estado final de calidad es verde (`13 passed, 1 skipped`).
+
+---
+
+## 6) Remates de repetibilidad (post-review)
+
+1. Separacion clara unit/integration:
+   - Unit (sqlite): `backend/tests`
+   - Integration (postgres live): `backend/tests_integration`
+   - Makefile actualizado con `test-unit`, `test-integration` y `test`.
+
+2. Reproducibilidad en Windows sin make:
+   - Scripts PowerShell anadidos en `scripts/`:
+     - `up.ps1`, `down.ps1`, `migrate.ps1`, `seed.ps1`, `test.ps1`, `demo.ps1`
+
+3. Verificacion de no artefactos tras demo:
+   - `scripts/demo.ps1` compara `git status --porcelain` antes y despues de `demo_audit` y falla si cambia.
+
+4. CI minimo automatizado:
+   - Workflow: `.github/workflows/ci.yml`
+   - Ejecuta: `docker compose up` (servicios necesarios), migraciones, seed, lint, unit tests, integration tests, demo-audit y check de git limpio.
