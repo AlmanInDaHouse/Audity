@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncpg
 import pytest
 
-from .conftest import _pg_dsn
+from tests_integration.conftest import _pg_dsn
 
 
 @pytest.mark.asyncio
