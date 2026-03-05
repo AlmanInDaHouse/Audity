@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncpg
 import pytest
-
 from tests_integration.conftest import _pg_dsn
 
 
