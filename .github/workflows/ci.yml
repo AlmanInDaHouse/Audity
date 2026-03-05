@@ -40,6 +40,18 @@ jobs:
           docker compose up -d --build postgres redis minio temporal api worker
           docker compose ps
 
+      - name: Migration idempotency smoke (clean + precreated roleenum)
+        shell: bash
+        run: |
+          docker compose exec -T postgres psql -U audity -d postgres -c "DROP DATABASE IF EXISTS audity_mig_clean;"
+          docker compose exec -T postgres psql -U audity -d postgres -c "CREATE DATABASE audity_mig_clean;"
+          docker compose exec -T api sh -lc "DATABASE_URL=postgresql+asyncpg://audity:audity@postgres:5432/audity_mig_clean uv run alembic upgrade head"
+
+          docker compose exec -T postgres psql -U audity -d postgres -c "DROP DATABASE IF EXISTS audity_mig_dirty;"
+          docker compose exec -T postgres psql -U audity -d postgres -c "CREATE DATABASE audity_mig_dirty;"
+          docker compose exec -T postgres psql -U audity -d audity_mig_dirty -c "CREATE TYPE roleenum AS ENUM ('org_admin','auditor','client_viewer');"
+          docker compose exec -T api sh -lc "DATABASE_URL=postgresql+asyncpg://audity:audity@postgres:5432/audity_mig_dirty uv run alembic upgrade head"
+
       - name: Run migrations and seed data
         run: |
           docker compose exec -T api uv run alembic upgrade head

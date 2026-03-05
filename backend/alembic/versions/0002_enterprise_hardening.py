@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects import postgresql
 
 revision = '0002_enterprise_hardening'
 down_revision = '0001_initial'
@@ -24,6 +25,19 @@ def _enable_rls(table: str, policy_sql: str) -> None:
 
 
 def upgrade() -> None:
+    # why this: support upgrade on partially initialized databases where roleenum exists
+    # or migration is retried after a failed run.
+    op.execute(
+        """
+        DO $$
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'roleenum') THEN
+                CREATE TYPE roleenum AS ENUM ('org_admin', 'auditor', 'client_viewer');
+            END IF;
+        END
+        $$;
+        """
+    )
     op.execute("ALTER TYPE roleenum ADD VALUE IF NOT EXISTS 'security_reviewer';")
     op.execute("ALTER TYPE roleenum ADD VALUE IF NOT EXISTS 'remediation_manager';")
 
@@ -99,7 +113,19 @@ def upgrade() -> None:
         'role_permissions',
         sa.Column('id', sa.String(36), primary_key=True),
         sa.Column('org_id', sa.String(36), sa.ForeignKey('organizations.id', ondelete='CASCADE'), nullable=True),
-        sa.Column('role', sa.Enum(name='roleenum', create_type=False), nullable=False),
+        sa.Column(
+            'role',
+            postgresql.ENUM(
+                'org_admin',
+                'auditor',
+                'client_viewer',
+                'security_reviewer',
+                'remediation_manager',
+                name='roleenum',
+                create_type=False,
+            ),
+            nullable=False,
+        ),
         sa.Column('resource', sa.String(64), nullable=False),
         sa.Column('action', sa.String(64), nullable=False),
         sa.Column('conditions_json', sa.JSON(), nullable=False, server_default=sa.text("'{}'::json")),

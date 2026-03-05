@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects import postgresql
 
 revision = '0001_initial'
 down_revision = None
@@ -17,12 +18,81 @@ depends_on = None
 
 
 def upgrade() -> None:
-    role_enum = sa.Enum('org_admin', 'auditor', 'client_viewer', name='roleenum')
-    criticality_enum = sa.Enum('low', 'medium', 'high', name='criticalityenum')
-    audit_status_enum = sa.Enum('queued', 'running', 'completed', 'failed', name='auditstatusenum')
-    finding_status_enum = sa.Enum('open', 'accepted', 'resolved', name='findingstatusenum')
-    severity_enum = sa.Enum('low', 'medium', 'high', name='severityenum')
-    result_enum = sa.Enum('pass', 'fail', 'partial', name='resultenum')
+    # why this: environments can be left in partial state (e.g. enum pre-created),
+    # and migration must remain idempotent for real deploy/rollback workflows.
+    op.execute(
+        """
+        DO $$
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'roleenum') THEN
+                CREATE TYPE roleenum AS ENUM ('org_admin', 'auditor', 'client_viewer');
+            END IF;
+        END
+        $$;
+        """
+    )
+    op.execute(
+        """
+        DO $$
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'criticalityenum') THEN
+                CREATE TYPE criticalityenum AS ENUM ('low', 'medium', 'high');
+            END IF;
+        END
+        $$;
+        """
+    )
+    op.execute(
+        """
+        DO $$
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'auditstatusenum') THEN
+                CREATE TYPE auditstatusenum AS ENUM ('queued', 'running', 'completed', 'failed');
+            END IF;
+        END
+        $$;
+        """
+    )
+    op.execute(
+        """
+        DO $$
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'findingstatusenum') THEN
+                CREATE TYPE findingstatusenum AS ENUM ('open', 'accepted', 'resolved');
+            END IF;
+        END
+        $$;
+        """
+    )
+    op.execute(
+        """
+        DO $$
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'severityenum') THEN
+                CREATE TYPE severityenum AS ENUM ('low', 'medium', 'high');
+            END IF;
+        END
+        $$;
+        """
+    )
+    op.execute(
+        """
+        DO $$
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'resultenum') THEN
+                CREATE TYPE resultenum AS ENUM ('pass', 'fail', 'partial');
+            END IF;
+        END
+        $$;
+        """
+    )
+
+    role_enum = postgresql.ENUM('org_admin', 'auditor', 'client_viewer', name='roleenum', create_type=False)
+    criticality_enum = postgresql.ENUM('low', 'medium', 'high', name='criticalityenum', create_type=False)
+    audit_status_enum = postgresql.ENUM('queued', 'running', 'completed', 'failed', name='auditstatusenum', create_type=False)
+    finding_status_enum = postgresql.ENUM('open', 'accepted', 'resolved', name='findingstatusenum', create_type=False)
+    severity_enum = postgresql.ENUM('low', 'medium', 'high', name='severityenum', create_type=False)
+    result_enum = postgresql.ENUM('pass', 'fail', 'partial', name='resultenum', create_type=False)
 
     op.create_table(
         'organizations',

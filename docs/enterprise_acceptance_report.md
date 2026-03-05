@@ -182,3 +182,34 @@ docker compose exec -T api uv run pytest -q tests_integration
 docker compose exec -T api uv run python -m app.scripts.demo_audit
 docker compose down -v
 ```
+
+## 9) Alembic Enum Idempotency Fix (2026-03-05)
+
+### Root Cause
+- `DuplicateObjectError: type "roleenum" already exists` occurred during upgrade to `0002`.
+- The enum type could already exist in partially initialized databases, and migration logic attempted to create/recreate enum metadata without guarding existence.
+
+### Fix
+- `0001_initial` now creates all enum types via guarded SQL blocks:
+  - `IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = '...') THEN CREATE TYPE ...`
+- Enum columns in `0001` and `0002` now use PostgreSQL enum definitions with `create_type=False` to avoid implicit re-creation.
+- `0002_enterprise_hardening` now ensures `roleenum` exists before `ALTER TYPE ... ADD VALUE IF NOT EXISTS`.
+- CI `backend-e2e` includes migration idempotency smoke:
+  - clean DB: `alembic upgrade head`
+  - dirty DB with precreated `roleenum`: `alembic upgrade head`
+
+### Reproducible Commands
+```bash
+docker compose exec -T postgres psql -U audity -d postgres -c "DROP DATABASE IF EXISTS audity_mig_clean;"
+docker compose exec -T postgres psql -U audity -d postgres -c "CREATE DATABASE audity_mig_clean;"
+docker compose exec -T api sh -lc "DATABASE_URL=postgresql+asyncpg://audity:audity@postgres:5432/audity_mig_clean uv run alembic upgrade head"
+
+docker compose exec -T postgres psql -U audity -d postgres -c "DROP DATABASE IF EXISTS audity_mig_dirty;"
+docker compose exec -T postgres psql -U audity -d postgres -c "CREATE DATABASE audity_mig_dirty;"
+docker compose exec -T postgres psql -U audity -d audity_mig_dirty -c "CREATE TYPE roleenum AS ENUM ('org_admin','auditor','client_viewer');"
+docker compose exec -T api sh -lc "DATABASE_URL=postgresql+asyncpg://audity:audity@postgres:5432/audity_mig_dirty uv run alembic upgrade head"
+```
+
+### Evidence
+- Clean DB upgrade: `Running upgrade -> 0001_initial` then `0001_initial -> 0002_enterprise_hardening` (OK).
+- Dirty DB (precreated `roleenum`) upgrade: same successful upgrade sequence (OK).
