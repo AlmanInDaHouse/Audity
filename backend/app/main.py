@@ -753,7 +753,7 @@ async def upload_evidence(
         'size': stored.size,
         'uploaded_at': datetime.now(UTC).isoformat(),
     }
-    signature_bundle = await sign_manifest(ctx.org_id, manifest_payload) if settings.feature_signing or settings.enterprise_features_enabled else {}
+    signature_bundle = await sign_manifest(ctx.org_id, manifest_payload)
 
     evidence = EvidenceItem(
         org_id=ctx.org_id,
