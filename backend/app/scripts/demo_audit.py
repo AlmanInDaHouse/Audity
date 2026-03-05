@@ -8,19 +8,37 @@ from sqlalchemy import select
 
 from app.db import SessionLocal
 from app.models import Organization, Project
+from app.scripts.seed_data import seed
+from app.tenancy import set_current_org
 
 
-async def _load_demo_ids() -> tuple[str, str]:
+async def _find_demo_ids() -> tuple[str, str] | None:
     async with SessionLocal() as db:
         org = await db.scalar(select(Organization).where(Organization.name == 'Demo Org'))
         if org is None:
-            raise RuntimeError('Demo Org not found. Run `make seed` first.')
+            return None
+        await set_current_org(db, org.id)
         project = await db.scalar(
             select(Project).where(Project.org_id == org.id, Project.name == 'Demo Project')
         )
         if project is None:
-            raise RuntimeError('Demo Project not found. Run `make seed` first.')
+            return None
         return org.id, project.id
+
+
+async def _load_demo_ids() -> tuple[str, str]:
+    demo_ids = await _find_demo_ids()
+    if demo_ids is not None:
+        return demo_ids
+
+    print('Demo data missing, running seed...')
+    await seed()
+    demo_ids = await _find_demo_ids()
+    if demo_ids is None:
+        raise RuntimeError(
+            'Demo Org/Project still missing after seed(). Check DATABASE_URL and migration state.'
+        )
+    return demo_ids
 
 
 async def run_demo() -> None:

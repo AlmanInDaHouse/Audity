@@ -58,9 +58,26 @@ jobs:
           docker compose exec -T api sh -lc "DATABASE_URL=postgresql+asyncpg://audity:audity@postgres:5432/audity_mig_dirty uv run alembic upgrade head"
 
       - name: Run migrations and seed data
+        shell: bash
         run: |
-          docker compose exec -T api uv run alembic upgrade head
-          docker compose exec -T api uv run python -m app.scripts.seed_data
+          DB_URL="postgresql+asyncpg://audity:audity@postgres:5432/audity"
+          docker compose exec -T api sh -lc "DATABASE_URL=${DB_URL} uv run alembic upgrade head"
+          docker compose exec -T api sh -lc "DATABASE_URL=${DB_URL} uv run python -m app.scripts.seed_data"
+
+      - name: Verify seed data exists
+        shell: bash
+        run: |
+          DB_URL="postgresql+asyncpg://audity:audity@postgres:5432/audity"
+          demo_exists="$(docker compose exec -T postgres psql -U postgres -d audity -tAc "SELECT EXISTS (SELECT 1 FROM organizations o JOIN projects p ON p.org_id = o.id WHERE o.name = 'Demo Org' AND p.name = 'Demo Project');" | tr -d '[:space:]')"
+          if [[ "${demo_exists}" != "t" ]]; then
+            org_count="$(docker compose exec -T postgres psql -U postgres -d audity -tAc "SELECT COUNT(*) FROM organizations;" | tr -d '[:space:]')"
+            project_count="$(docker compose exec -T postgres psql -U postgres -d audity -tAc "SELECT COUNT(*) FROM projects;" | tr -d '[:space:]')"
+            echo "Seed verification failed: Demo Project is missing"
+            echo "DATABASE_URL=${DB_URL}"
+            echo "organizations_count=${org_count}"
+            echo "projects_count=${project_count}"
+            exit 1
+          fi
 
       - name: Lint
         run: |
@@ -76,8 +93,9 @@ jobs:
       - name: Demo audit and verify no git artifacts
         shell: bash
         run: |
+          DB_URL="postgresql+asyncpg://audity:audity@postgres:5432/audity"
           before="$(git status --porcelain)"
-          docker compose exec -T api uv run python -m app.scripts.demo_audit
+          docker compose exec -T api sh -lc "DATABASE_URL=${DB_URL} uv run python -m app.scripts.demo_audit"
           after="$(git status --porcelain)"
           if [[ "$before" != "$after" ]]; then
             echo "Repository changed after demo_audit"
