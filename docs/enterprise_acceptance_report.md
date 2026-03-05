@@ -200,16 +200,60 @@ docker compose down -v
 
 ### Reproducible Commands
 ```bash
-docker compose exec -T postgres psql -U audity -d postgres -c "DROP DATABASE IF EXISTS audity_mig_clean;"
-docker compose exec -T postgres psql -U audity -d postgres -c "CREATE DATABASE audity_mig_clean;"
+docker compose exec -T postgres psql -U postgres -d postgres -c "DROP DATABASE IF EXISTS audity_mig_clean;"
+docker compose exec -T postgres psql -U postgres -d postgres -c "CREATE DATABASE audity_mig_clean;"
 docker compose exec -T api sh -lc "DATABASE_URL=postgresql+asyncpg://audity:audity@postgres:5432/audity_mig_clean uv run alembic upgrade head"
 
-docker compose exec -T postgres psql -U audity -d postgres -c "DROP DATABASE IF EXISTS audity_mig_dirty;"
-docker compose exec -T postgres psql -U audity -d postgres -c "CREATE DATABASE audity_mig_dirty;"
-docker compose exec -T postgres psql -U audity -d audity_mig_dirty -c "CREATE TYPE roleenum AS ENUM ('org_admin','auditor','client_viewer');"
+docker compose exec -T postgres psql -U postgres -d postgres -c "DROP DATABASE IF EXISTS audity_mig_dirty;"
+docker compose exec -T postgres psql -U postgres -d postgres -c "CREATE DATABASE audity_mig_dirty;"
+docker compose exec -T postgres psql -U postgres -d audity_mig_dirty -c "CREATE TYPE roleenum AS ENUM ('org_admin','auditor','client_viewer');"
 docker compose exec -T api sh -lc "DATABASE_URL=postgresql+asyncpg://audity:audity@postgres:5432/audity_mig_dirty uv run alembic upgrade head"
 ```
 
 ### Evidence
 - Clean DB upgrade: `Running upgrade -> 0001_initial` then `0001_initial -> 0002_enterprise_hardening` (OK).
 - Dirty DB (precreated `roleenum`) upgrade: same successful upgrade sequence (OK).
+
+## 10) Postgres RLS Enforcement Fix (2026-03-05)
+
+### Root Cause
+- Cross-tenant reads on `projects` were not consistently blocked at DB level because:
+  - Core RLS policy set allowed permissive insert behavior (`WITH CHECK (true)`), and
+  - Tenant context used transaction-local `set_config(..., true)`, which was lost after commit/refresh in some request paths.
+- App DB role hardening also caused Temporal bootstrap issues because Temporal tried to create DBs with non-privileged app credentials.
+
+### Fix
+- Enforced strict core tenant policies in `0002_enterprise_hardening` for:
+  - `projects`
+  - `audit_runs`
+  - `evidence_items`
+- Policy model:
+  - `ENABLE ROW LEVEL SECURITY`
+  - `FORCE ROW LEVEL SECURITY`
+  - tenant expression based on `current_setting('app.current_org_id', true)`
+  - `INSERT WITH CHECK` now enforces tenant expression.
+- Tenant context handling:
+  - `set_current_org` now sets session-level context.
+  - DB session cleanup resets `app.current_org_id` to prevent pool leakage.
+  - `/auth/mock/login` now sets tenant context before membership lookup.
+- Compose hardening:
+  - App role `audity` is non-superuser and `NOBYPASSRLS`.
+  - Temporal uses `postgres` bootstrap credentials to avoid `permission denied to create database`.
+
+### Reproducible Commands
+```bash
+docker compose down -v
+docker compose up -d --build postgres redis minio temporal api worker
+docker compose exec -T api uv run alembic upgrade head
+docker compose exec -T postgres psql -U postgres -d postgres -c "SELECT rolname, rolsuper, rolbypassrls FROM pg_roles WHERE rolname='audity';"
+docker compose exec -T api uv run pytest -q tests_integration
+docker compose exec -T api uv run pytest -q tests tests_integration
+```
+
+### Evidence
+- Role check:
+  - `audity | rolsuper=f | rolbypassrls=f`
+- Integration:
+  - `3 passed in 2.53s`
+- Full backend + integration:
+  - `21 passed, 1 skipped`

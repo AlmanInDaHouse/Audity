@@ -11,6 +11,8 @@ import pytest_asyncio
 
 def _pg_dsn() -> str:
     raw = os.getenv('DATABASE_URL', 'postgresql+asyncpg://audity:audity@postgres:5432/audity')
+    if not raw.startswith(('postgresql://', 'postgresql+asyncpg://', 'postgres://')):
+        raw = 'postgresql+asyncpg://audity:audity@postgres:5432/audity'
     return raw.replace('postgresql+asyncpg://', 'postgresql://', 1)
 
 
@@ -93,6 +95,7 @@ async def org_context() -> dict[str, Any]:
             admin_b_id,
         )
 
+        await conn.execute("SELECT set_config('app.current_org_id', $1, false)", org_a_id)
         await conn.execute(
             "INSERT INTO projects (id, org_id, name, description, criticality, created_at) VALUES ($1, $2, $3, $4, 'medium'::criticalityenum, now())",
             project_a_id,
@@ -100,6 +103,7 @@ async def org_context() -> dict[str, Any]:
             f'IT Project A {suffix}',
             'integration test project',
         )
+        await conn.execute("SELECT set_config('app.current_org_id', $1, false)", org_b_id)
         await conn.execute(
             "INSERT INTO projects (id, org_id, name, description, criticality, created_at) VALUES ($1, $2, $3, $4, 'high'::criticalityenum, now())",
             project_b_id,

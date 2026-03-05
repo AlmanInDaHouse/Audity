@@ -9,6 +9,8 @@ import pytest
 
 def _pg_dsn() -> str:
     raw = os.getenv('DATABASE_URL', 'postgresql+asyncpg://audity:audity@postgres:5432/audity')
+    if not raw.startswith(('postgresql://', 'postgresql+asyncpg://', 'postgres://')):
+        raw = 'postgresql+asyncpg://audity:audity@postgres:5432/audity'
     return raw.replace('postgresql+asyncpg://', 'postgresql://', 1)
 
 

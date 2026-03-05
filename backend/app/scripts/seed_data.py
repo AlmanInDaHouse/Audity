@@ -15,6 +15,7 @@ from app.models import (
     RoleEnum,
     User,
 )
+from app.tenancy import set_current_org
 
 
 async def seed() -> None:
@@ -27,6 +28,7 @@ async def seed() -> None:
         org = Organization(name='Demo Org')
         db.add(org)
         await db.flush()
+        await set_current_org(db, org.id)
 
         admin = User(email='admin@demo.local', display_name='Org Admin')
         auditor = User(email='auditor@demo.local', display_name='Security Auditor')

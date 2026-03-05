@@ -53,6 +53,7 @@ from app.signing import sign_manifest
 from app.storage import get_object_store
 from app.telemetry import UPLOAD_QUARANTINED, render_metrics, telemetry_middleware
 from app.temporal_workflow import AuditRunWorkflowInput
+from app.tenancy import set_current_org
 from app.workflow_launcher import launch_audit_workflow
 
 settings = get_settings()
@@ -135,6 +136,7 @@ async def jwks() -> dict[str, Any]:
 
 @app.post('/auth/mock/login')
 async def mock_login(payload: LoginRequest, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    await set_current_org(db, payload.org_id)
     user = await db.scalar(select(User).where(User.email == payload.email))
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Unknown user')

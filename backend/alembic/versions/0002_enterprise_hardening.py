@@ -24,6 +24,33 @@ def _enable_rls(table: str, policy_sql: str) -> None:
     op.execute(f'CREATE POLICY p_{table}_tenant ON {table} USING ({policy_sql});')
 
 
+def _enforce_core_tenant_isolation(table: str) -> None:
+    # why this: core tenant tables must be blocked at DB layer even if app filters are buggy.
+    # We keep INSERT permissive for bootstrapping/fixtures and enforce strict read/update/delete isolation.
+    tenant_expr = "org_id::uuid = NULLIF(current_setting('app.current_org_id', true), '')::uuid"
+    op.execute(f'ALTER TABLE {table} ENABLE ROW LEVEL SECURITY;')
+    op.execute(f'ALTER TABLE {table} FORCE ROW LEVEL SECURITY;')
+    op.execute(f'DROP POLICY IF EXISTS p_{table}_tenant ON {table};')
+    op.execute(f'DROP POLICY IF EXISTS tenant_isolation_{table} ON {table};')
+    op.execute(f'DROP POLICY IF EXISTS tenant_isolation_{table}_insert ON {table};')
+    op.execute(
+        f'CREATE POLICY tenant_isolation_{table} ON {table} '
+        f'FOR SELECT USING ({tenant_expr});'
+    )
+    op.execute(
+        f'CREATE POLICY tenant_isolation_{table}_update ON {table} '
+        f'FOR UPDATE USING ({tenant_expr}) WITH CHECK ({tenant_expr});'
+    )
+    op.execute(
+        f'CREATE POLICY tenant_isolation_{table}_delete ON {table} '
+        f'FOR DELETE USING ({tenant_expr});'
+    )
+    op.execute(
+        f'CREATE POLICY tenant_isolation_{table}_insert ON {table} '
+        f'FOR INSERT WITH CHECK ({tenant_expr});'
+    )
+
+
 def upgrade() -> None:
     # why this: support upgrade on partially initialized databases where roleenum exists
     # or migration is retried after a failed run.
@@ -254,6 +281,10 @@ def upgrade() -> None:
     _enable_rls('control_catalogs', f"{tenant_clause} OR is_global = true")
     _enable_rls('role_permissions', f"{tenant_clause} OR org_id IS NULL")
     _enable_rls('auth_sessions', tenant_clause)
+
+    _enforce_core_tenant_isolation('projects')
+    _enforce_core_tenant_isolation('audit_runs')
+    _enforce_core_tenant_isolation('evidence_items')
 
 
 def downgrade() -> None:
