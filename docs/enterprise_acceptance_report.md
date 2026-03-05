@@ -149,3 +149,36 @@ docker compose down -v
 ## 7) Final Status
 - Code implementation: **COMPLETE for requested scope in-repo**, with Phase 4 as readiness kit.
 - Runtime validation in this terminal: **PARTIAL**, blocked by unavailable Docker engine in this environment.
+
+## 8) CI Env Bootstrap Fix (2026-03-05)
+
+### Problem
+- GitHub Actions failed with:
+  - `env file .../.env not found`
+- Root cause:
+  - `docker compose` is invoked before ensuring `.env` exists.
+  - Even `docker compose down` reads compose config and may fail if `env_file: .env` is missing.
+
+### Fix Implemented
+- Added versioned CI-safe env file: `.env.ci`.
+- Updated workflows to create `.env` immediately after checkout and before any compose command:
+  - `.github/workflows/ci.yml`
+  - `.github/workflows/nightly-restore-smoke.yml`
+- Logic:
+  - `cp .env.ci .env` when available.
+  - fallback `cp .env.example .env`.
+  - hard fail if neither exists.
+- Kept `.env` ignored in git and allowed `.env.ci` tracked (`.gitignore` updated).
+
+### Reproduction
+```bash
+cp .env.ci .env
+docker compose down -v || true
+docker compose up -d --build postgres redis minio temporal api worker
+docker compose exec -T api uv run alembic upgrade head
+docker compose exec -T api uv run python -m app.scripts.seed_data
+docker compose exec -T api uv run pytest -q tests
+docker compose exec -T api uv run pytest -q tests_integration
+docker compose exec -T api uv run python -m app.scripts.demo_audit
+docker compose down -v
+```
