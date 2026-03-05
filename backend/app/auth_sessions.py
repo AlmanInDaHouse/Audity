@@ -10,6 +10,12 @@ from app.models import AuthSession, Membership, User
 from app.security import hash_refresh_token, new_refresh_token
 
 
+def ensure_utc_aware(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
+
+
 async def issue_session(db: AsyncSession, *, user: User, org_id: str) -> tuple[str, AuthSession]:
     settings = get_settings()
     refresh_token = new_refresh_token()
@@ -31,7 +37,9 @@ async def rotate_session(db: AsyncSession, *, refresh_token: str) -> tuple[AuthS
         raise ValueError('Session not found')
     if session.revoked_at is not None:
         raise ValueError('Session revoked')
-    if session.expires_at < datetime.now(UTC):
+    now = datetime.now(UTC)
+    exp = ensure_utc_aware(session.expires_at)
+    if exp < now:
         raise ValueError('Session expired')
 
     user = await db.get(User, session.user_id)
