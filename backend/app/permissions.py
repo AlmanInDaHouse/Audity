@@ -4,7 +4,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Project, RolePermission, RoleEnum
+from app.models import Project, RoleEnum, RolePermission
 
 DEFAULT_PERMISSIONS: dict[RoleEnum, set[tuple[str, str]]] = {
     RoleEnum.org_admin: {

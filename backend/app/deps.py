@@ -5,8 +5,8 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db import get_db
 from app.config import get_settings
+from app.db import get_db
 from app.models import Membership, OrgSecurityPolicy, User
 from app.security import TokenClaims, get_oidc_verifier
 from app.tenancy import set_current_org

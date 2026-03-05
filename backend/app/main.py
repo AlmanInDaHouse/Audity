@@ -11,14 +11,13 @@ from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.av_scanner import scan_upload_activity
 from app.audit_log import append_audit_log
 from app.auth_sessions import issue_session
+from app.av_scanner import scan_upload_activity
 from app.config import get_settings
 from app.db import Base, engine, get_db
 from app.deps import UserContext, get_current_user, require_mfa, require_roles
 from app.enterprise import router as enterprise_router
-from app.otel import setup_otel
 from app.models import (
     AuditLogEntry,
     AuditRun,
@@ -28,14 +27,15 @@ from app.models import (
     Finding,
     Integration,
     Membership,
+    Organization,
     OrgSecurityPolicy,
     PricingPlan,
-    Organization,
     Project,
     RemediationTask,
     RoleEnum,
     User,
 )
+from app.otel import setup_otel
 from app.permissions import require_permission
 from app.rate_limit import enforce_sensitive_limit, rate_limit_middleware, rate_limiter
 from app.schemas import (
