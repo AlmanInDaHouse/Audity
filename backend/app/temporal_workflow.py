@@ -5,7 +5,9 @@ from datetime import timedelta
 from typing import Any
 
 from temporalio import activity, workflow
+from temporalio.common import RetryPolicy
 
+from app.av_scanner import scan_upload_activity
 from app.workflow_runtime import (
     AuditWorkflowInput,
     calculate_risk_activity,
@@ -85,6 +87,11 @@ async def mark_audit_failed_activity(input_data: dict[str, Any], reason: str) ->
     await mark_audit_failed(AuditWorkflowInput(**input_data), reason)
 
 
+@activity.defn
+async def scan_upload_activity_wrapper(content: bytes) -> str:
+    return await scan_upload_activity(content)
+
+
 @workflow.defn
 class AuditRunWorkflow:
     @workflow.run
@@ -92,48 +99,62 @@ class AuditRunWorkflow:
         payload = asdict(input_payload)
 
         timeout = timedelta(minutes=5)
+        retry = RetryPolicy(
+            initial_interval=timedelta(seconds=2),
+            backoff_coefficient=2.0,
+            maximum_interval=timedelta(seconds=30),
+            maximum_attempts=3,
+        )
 
         try:
             integrations = await workflow.execute_activity(
                 snapshot_integrations_activity,
                 payload,
                 schedule_to_close_timeout=timeout,
+                retry_policy=retry,
             )
             github = await workflow.execute_activity(
                 collect_github_evidence_activity,
                 args=[payload, integrations],
                 schedule_to_close_timeout=timeout,
+                retry_policy=retry,
             )
             google = await workflow.execute_activity(
                 collect_google_workspace_evidence_activity,
                 args=[payload, integrations],
                 schedule_to_close_timeout=timeout,
+                retry_policy=retry,
             )
             manual = await workflow.execute_activity(
                 collect_manual_evidence_refs_activity,
                 payload,
                 schedule_to_close_timeout=timeout,
+                retry_policy=retry,
             )
             evidence = {'github': github, 'google_workspace': google, 'manual': manual}
             control_eval = await workflow.execute_activity(
                 evaluate_controls_activity_wrapper,
                 args=[payload, evidence],
                 schedule_to_close_timeout=timeout,
+                retry_policy=retry,
             )
             risk = await workflow.execute_activity(
                 calculate_risk_activity_wrapper,
                 args=[payload, control_eval],
                 schedule_to_close_timeout=timeout,
+                retry_policy=retry,
             )
             report_meta = await workflow.execute_activity(
                 generate_report_activity_wrapper,
                 args=[payload, evidence, control_eval, risk],
                 schedule_to_close_timeout=timeout,
+                retry_policy=retry,
             )
             return await workflow.execute_activity(
                 persist_results_activity_wrapper,
                 args=[payload, evidence, control_eval, risk, report_meta],
                 schedule_to_close_timeout=timeout,
+                retry_policy=retry,
             )
         except Exception as exc:
             await workflow.execute_activity(
@@ -154,4 +175,5 @@ ACTIVITIES = [
     generate_report_activity_wrapper,
     persist_results_activity_wrapper,
     mark_audit_failed_activity,
+    scan_upload_activity_wrapper,
 ]

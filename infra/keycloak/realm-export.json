@@ -1,0 +1,27 @@
+{
+  "realm": "audity-dev",
+  "enabled": true,
+  "clients": [
+    {
+      "clientId": "audity-web",
+      "enabled": true,
+      "publicClient": true,
+      "redirectUris": [
+        "https://localhost:5443/*",
+        "http://localhost:53000/*"
+      ],
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "protocol": "openid-connect"
+    }
+  ],
+  "roles": {
+    "realm": [
+      { "name": "org_admin" },
+      { "name": "auditor" },
+      { "name": "client_viewer" },
+      { "name": "security_reviewer" },
+      { "name": "remediation_manager" }
+    ]
+  }
+}

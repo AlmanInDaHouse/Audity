@@ -35,6 +35,16 @@ def clean_db() -> None:
     async def _clean() -> None:
         async with SessionLocal() as db:
             tables = [
+                'audit_packages',
+                'pricing_plans',
+                'outbound_integrations',
+                'remediation_comments',
+                'waivers',
+                'finding_approvals',
+                'role_permissions',
+                'scim_access_tokens',
+                'org_security_policies',
+                'auth_sessions',
                 'audit_log_entries',
                 'remediation_tasks',
                 'findings',

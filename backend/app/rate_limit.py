@@ -8,6 +8,7 @@ from fastapi import HTTPException, Request, status
 from redis.asyncio import Redis
 
 from app.config import get_settings
+from app.telemetry import RATE_LIMIT_HITS
 
 
 class RateLimiter:
@@ -58,6 +59,13 @@ async def rate_limit_middleware(request: Request, call_next: Callable[[Request],
     return await call_next(request)
 
 
-async def enforce_sensitive_limit(request: Request) -> None:
+async def enforce_sensitive_limit(request: Request, *, org_id: str | None = None, user_id: str | None = None) -> None:
     client_ip = request.client.host if request.client else 'unknown'
-    await rate_limiter.check(f'{client_ip}:sensitive:{request.url.path}', rate_limiter.settings.sensitive_rate_limit_per_minute)
+    resolved_org = org_id or request.headers.get('x-org-id', 'none')
+    resolved_user = user_id or request.headers.get('x-user-id', 'anon')
+    key = f'{client_ip}:{resolved_org}:{resolved_user}:sensitive:{request.url.path}'
+    try:
+        await rate_limiter.check(key, rate_limiter.settings.sensitive_rate_limit_per_minute)
+    except HTTPException:
+        RATE_LIMIT_HITS.labels(request.url.path).inc()
+        raise

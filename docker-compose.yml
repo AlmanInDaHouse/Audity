@@ -84,6 +84,22 @@ services:
       WORKFLOW_MODE: temporal
       OIDC_ISSUER: https://localhost:5443/api
       API_BASE_URL: https://localhost:5443/api
+      ENTERPRISE_FEATURES_ENABLED: "false"
+      FEATURE_AUTH_ENTERPRISE: "false"
+      FEATURE_SCIM: "false"
+      FEATURE_SECRET_STORE: "false"
+      FEATURE_UPLOAD_AV_SCAN: "false"
+      FEATURE_SIGNING: "false"
+      FEATURE_TSA: "false"
+      FEATURE_RBAC_ABAC: "false"
+      FEATURE_APPROVALS: "false"
+      FEATURE_REPORTING_PACKAGE: "false"
+      FEATURE_PRICING: "false"
+      SECRET_STORE_BACKEND: env
+      CLAMAV_HOST: clamav
+      CLAMAV_PORT: 3310
+      TELEMETRY_ENABLED: "false"
+      OTLP_ENDPOINT: http://otel-collector:4317
     volumes:
       - ./:/workspace
     depends_on:
@@ -128,6 +144,14 @@ services:
       WORKFLOW_MODE: temporal
       OIDC_ISSUER: https://localhost:5443/api
       API_BASE_URL: https://localhost:5443/api
+      ENTERPRISE_FEATURES_ENABLED: "false"
+      FEATURE_UPLOAD_AV_SCAN: "false"
+      FEATURE_SIGNING: "false"
+      SECRET_STORE_BACKEND: env
+      CLAMAV_HOST: clamav
+      CLAMAV_PORT: 3310
+      TELEMETRY_ENABLED: "false"
+      OTLP_ENDPOINT: http://otel-collector:4317
     volumes:
       - ./:/workspace
     depends_on:
@@ -162,8 +186,142 @@ services:
       - caddy_data:/data
       - caddy_config:/config
 
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    profiles: ["idp"]
+    command:
+      - start-dev
+      - --http-port=8080
+      - --hostname-strict=false
+      - --import-realm
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+    ports:
+      - "58080:8080"
+    volumes:
+      - ./infra/keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+
+  vault:
+    image: hashicorp/vault:1.17
+    profiles: ["vault"]
+    cap_add:
+      - IPC_LOCK
+    command:
+      - vault
+      - server
+      - -dev
+      - -dev-root-token-id=root
+      - -dev-listen-address=0.0.0.0:8200
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: root
+      VAULT_ADDR: http://0.0.0.0:8200
+    ports:
+      - "58200:8200"
+
+  clamav:
+    image: clamav/clamav:latest
+    profiles: ["av"]
+    ports:
+      - "53310:3310"
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.121.0
+    profiles: ["obs"]
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./infra/observability/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "54317:4317"
+      - "54318:4318"
+
+  prometheus:
+    image: prom/prometheus:v3.2.1
+    profiles: ["obs"]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+    volumes:
+      - ./infra/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "59090:9090"
+
+  loki:
+    image: grafana/loki:3.4.2
+    profiles: ["obs"]
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    ports:
+      - "53100:3100"
+
+  grafana:
+    image: grafana/grafana:11.5.2
+    profiles: ["obs"]
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    ports:
+      - "53001:3000"
+    volumes:
+      - ./infra/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+      - loki
+
+  postgres-backup:
+    image: postgres:16-alpine
+    profiles: ["backup"]
+    environment:
+      PGPASSWORD: audity
+    volumes:
+      - backup_data:/backups
+    command:
+      - sh
+      - -c
+      - >-
+        while true; do
+          ts=$$(date +%Y%m%d%H%M%S);
+          pg_dump -h postgres -U audity -d audity -F c -f /backups/audity-$$ts.dump;
+          find /backups -name '*.dump' -mtime +7 -delete;
+          sleep 3600;
+        done
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  minio-backup:
+    image: minio/mc:latest
+    profiles: ["backup"]
+    volumes:
+      - backup_data:/backups
+    command:
+      - sh
+      - -c
+      - >-
+        while true; do
+          mc alias set src http://minio:9000 minioadmin minioadmin;
+          mc mirror --overwrite src/audity-evidence /backups/minio;
+          sleep 3600;
+        done
+    depends_on:
+      minio:
+        condition: service_healthy
+
+  waf:
+    image: nginx:1.27-alpine
+    profiles: ["waf"]
+    ports:
+      - "5081:80"
+    volumes:
+      - ./infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      api:
+        condition: service_healthy
+      frontend:
+        condition: service_started
+
 volumes:
   postgres_data:
   minio_data:
   caddy_data:
   caddy_config:
+  backup_data:

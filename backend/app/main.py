@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile, status
@@ -11,10 +11,14 @@ from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.av_scanner import scan_upload_activity
 from app.audit_log import append_audit_log
+from app.auth_sessions import issue_session
 from app.config import get_settings
 from app.db import Base, engine, get_db
-from app.deps import UserContext, get_current_user, require_roles
+from app.deps import UserContext, get_current_user, require_mfa, require_roles
+from app.enterprise import router as enterprise_router
+from app.otel import setup_otel
 from app.models import (
     AuditLogEntry,
     AuditRun,
@@ -24,12 +28,15 @@ from app.models import (
     Finding,
     Integration,
     Membership,
+    OrgSecurityPolicy,
+    PricingPlan,
     Organization,
     Project,
     RemediationTask,
     RoleEnum,
     User,
 )
+from app.permissions import require_permission
 from app.rate_limit import enforce_sensitive_limit, rate_limit_middleware, rate_limiter
 from app.schemas import (
     AuditRunCreate,
@@ -42,7 +49,9 @@ from app.schemas import (
     ProjectUpdate,
 )
 from app.security import get_signer
+from app.signing import sign_manifest
 from app.storage import get_object_store
+from app.telemetry import UPLOAD_QUARANTINED, render_metrics, telemetry_middleware
 from app.temporal_workflow import AuditRunWorkflowInput
 from app.workflow_launcher import launch_audit_workflow
 
@@ -65,6 +74,8 @@ app.add_middleware(
     allow_headers=['*'],
 )
 app.middleware('http')(rate_limit_middleware)
+if settings.metrics_enabled:
+    app.middleware('http')(telemetry_middleware)
 
 
 @app.middleware('http')
@@ -79,6 +90,7 @@ async def security_headers_middleware(request: Request, call_next):
 
 @app.on_event('startup')
 async def startup() -> None:
+    setup_otel(app)
     await rate_limiter.startup()
     store = get_object_store()
     await store.ensure_bucket()
@@ -92,9 +104,17 @@ async def shutdown() -> None:
     await rate_limiter.shutdown()
 
 
+app.include_router(enterprise_router)
+
+
 @app.get('/health')
 async def health() -> dict[str, str]:
     return {'status': 'ok'}
+
+
+@app.get('/metrics')
+async def metrics() -> Response:
+    return render_metrics()
 
 
 @app.get('/.well-known/openid-configuration')
@@ -125,13 +145,23 @@ async def mock_login(payload: LoginRequest, db: AsyncSession = Depends(get_db)) 
     if membership is None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='User not member of organization')
 
+    refresh_token, session = await issue_session(db, user=user, org_id=payload.org_id)
     token = get_signer().token(
         sub=user.id,
         email=user.email,
         org_id=payload.org_id,
         role=membership.role.value,
+        sid=session.id,
+        mfa=payload.mfa,
     )
-    return {'access_token': token, 'token_type': 'bearer', 'expires_in': 8 * 3600}
+    await db.commit()
+    return {
+        'access_token': token,
+        'refresh_token': refresh_token,
+        'session_id': session.id,
+        'token_type': 'bearer',
+        'expires_in': settings.access_token_ttl_minutes * 60,
+    }
 
 
 def _org_to_dict(org: Organization) -> dict[str, Any]:
@@ -161,6 +191,15 @@ def _integration_to_dict(item: Integration) -> dict[str, Any]:
     }
 
 
+def _contains_plaintext_secret(config_json: dict[str, Any]) -> bool:
+    for key, value in config_json.items():
+        normalized = key.lower()
+        if any(marker in normalized for marker in ('secret', 'token', 'password', 'private_key')):
+            if isinstance(value, str) and value.strip():
+                return True
+    return False
+
+
 def _catalog_to_dict(item: ControlCatalog) -> dict[str, Any]:
     return {
         'id': item.id,
@@ -186,6 +225,7 @@ def _audit_run_to_dict(item: AuditRun) -> dict[str, Any]:
         'risk_score': item.risk_score,
         'risk_level': item.risk_level,
         'report_evidence_id': item.report_evidence_id,
+        'signature_bundle_json': item.signature_bundle_json,
     }
 
 
@@ -216,6 +256,8 @@ async def create_organization(
 
     membership = Membership(org_id=org.id, user_id=ctx.user_id, role=RoleEnum.org_admin)
     db.add(membership)
+    db.add(OrgSecurityPolicy(org_id=org.id))
+    db.add(PricingPlan(org_id=org.id))
 
     await append_audit_log(
         db,
@@ -258,6 +300,7 @@ async def create_project(
 ) -> dict[str, Any]:
     if org_id != ctx.org_id:
         raise HTTPException(status_code=403, detail='Cross-tenant access denied')
+    await require_permission(db, org_id=ctx.org_id, role=ctx.role, resource='project', action='write')
 
     project = Project(
         org_id=org_id,
@@ -299,6 +342,7 @@ async def update_project(
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     project = await _project_for_org(db, project_id, ctx.org_id)
+    await require_permission(db, org_id=ctx.org_id, role=ctx.role, resource='project', action='write', project=project)
     if payload.name is not None:
         project.name = payload.name
     if payload.description is not None:
@@ -326,6 +370,7 @@ async def delete_project(
     db: AsyncSession = Depends(get_db),
 ) -> Response:
     project = await _project_for_org(db, project_id, ctx.org_id)
+    await require_permission(db, org_id=ctx.org_id, role=ctx.role, resource='project', action='delete', project=project)
     await db.delete(project)
     await append_audit_log(
         db,
@@ -361,7 +406,8 @@ async def create_integration(
     ctx: UserContext = Depends(require_roles('org_admin', 'auditor')),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    await _project_for_org(db, project_id, ctx.org_id)
+    project = await _project_for_org(db, project_id, ctx.org_id)
+    await require_permission(db, org_id=ctx.org_id, role=ctx.role, resource='project', action='write', project=project)
     integration = Integration(
         org_id=ctx.org_id,
         project_id=project_id,
@@ -371,6 +417,8 @@ async def create_integration(
         secret_ref=payload.secret_ref,
         is_enabled=payload.is_enabled,
     )
+    if _contains_plaintext_secret(payload.config_json):
+        raise HTTPException(status_code=400, detail='config_json cannot contain plaintext secrets; use secret_ref')
     db.add(integration)
     await db.flush()
     await append_audit_log(
@@ -399,8 +447,11 @@ async def update_integration(
     )
     if integration is None:
         raise HTTPException(status_code=404, detail='Integration not found')
+    await require_permission(db, org_id=ctx.org_id, role=ctx.role, resource='project', action='write')
 
     for field, value in payload.model_dump(exclude_none=True).items():
+        if field == 'config_json' and isinstance(value, dict) and _contains_plaintext_secret(value):
+            raise HTTPException(status_code=400, detail='config_json cannot contain plaintext secrets; use secret_ref')
         setattr(integration, field, value)
 
     await append_audit_log(
@@ -427,6 +478,7 @@ async def delete_integration(
     )
     if integration is None:
         raise HTTPException(status_code=404, detail='Integration not found')
+    await require_permission(db, org_id=ctx.org_id, role=ctx.role, resource='project', action='delete')
     await db.delete(integration)
     await append_audit_log(
         db,
@@ -516,11 +568,12 @@ async def create_audit_run(
     project_id: str,
     payload: AuditRunCreate,
     request: Request,
-    ctx: UserContext = Depends(require_roles('org_admin', 'auditor')),
+    ctx: UserContext = Depends(require_mfa),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    await enforce_sensitive_limit(request)
-    await _project_for_org(db, project_id, ctx.org_id)
+    await enforce_sensitive_limit(request, org_id=ctx.org_id, user_id=ctx.user_id)
+    project = await _project_for_org(db, project_id, ctx.org_id)
+    await require_permission(db, org_id=ctx.org_id, role=ctx.role, resource='audit_run', action='launch', project=project)
 
     run = AuditRun(
         org_id=ctx.org_id,
@@ -651,15 +704,23 @@ async def upload_evidence(
     item_type: str = Form(default='manual_upload'),
     metadata_json: str = Form(default='{}'),
     audit_run_id: str | None = Form(default=None),
-    ctx: UserContext = Depends(require_roles('org_admin', 'auditor')),
+    ctx: UserContext = Depends(require_mfa),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    await enforce_sensitive_limit(request)
-    await _project_for_org(db, project_id, ctx.org_id)
+    await enforce_sensitive_limit(request, org_id=ctx.org_id, user_id=ctx.user_id)
+    project = await _project_for_org(db, project_id, ctx.org_id)
+    await require_permission(db, org_id=ctx.org_id, role=ctx.role, resource='evidence', action='upload', project=project)
 
     contents = await file.read()
-    if len(contents) > 20 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail='File too large (max 20MB for MVP)')
+    policy = await db.get(OrgSecurityPolicy, ctx.org_id)
+    plan = await db.get(PricingPlan, ctx.org_id)
+    max_size = settings.upload_default_max_mb * 1024 * 1024
+    if policy is not None:
+        max_size = min(max_size, policy.max_upload_bytes)
+    if plan is not None:
+        max_size = min(max_size, plan.max_upload_bytes)
+    if len(contents) > max_size:
+        raise HTTPException(status_code=413, detail=f'File too large (max {max_size} bytes)')
 
     content_type = (file.content_type or 'application/octet-stream').split(';', 1)[0].strip().lower()
     if content_type not in ALLOWED_UPLOAD_MIME_TYPES:
@@ -674,6 +735,26 @@ async def upload_evidence(
     store = get_object_store()
     stored = await store.put_bytes(key, contents, content_type)
 
+    scan_status = await scan_upload_activity(contents)
+    quarantined = scan_status in {'infected', 'scan_error'}
+    quarantine_reason = None if not quarantined else f'av_scan_{scan_status}'
+    if quarantined:
+        UPLOAD_QUARANTINED.labels(ctx.org_id).inc()
+
+    retention_days = policy.retention_days if policy else 365
+    retention_until = datetime.now(UTC) + timedelta(days=retention_days)
+    manifest_payload = {
+        'org_id': ctx.org_id,
+        'project_id': project_id,
+        'audit_run_id': audit_run_id,
+        'filename': file.filename,
+        'sha256': stored.sha256,
+        'content_type': content_type,
+        'size': stored.size,
+        'uploaded_at': datetime.now(UTC).isoformat(),
+    }
+    signature_bundle = await sign_manifest(ctx.org_id, manifest_payload) if settings.feature_signing or settings.enterprise_features_enabled else {}
+
     evidence = EvidenceItem(
         org_id=ctx.org_id,
         project_id=project_id,
@@ -684,6 +765,11 @@ async def upload_evidence(
         object_key=stored.key,
         sha256=stored.sha256,
         metadata_json={**metadata, 'content_type': content_type, 'size': stored.size},
+        scan_status=scan_status,
+        quarantine_reason=quarantine_reason,
+        retention_until=retention_until,
+        manifest_json=manifest_payload,
+        signature_bundle_json=signature_bundle,
         created_by_user_id=ctx.user_id,
     )
     db.add(evidence)
@@ -711,7 +797,10 @@ async def upload_evidence(
         'name': evidence.name,
         'object_key': evidence.object_key,
         'sha256': evidence.sha256,
+        'scan_status': evidence.scan_status,
+        'quarantine_reason': evidence.quarantine_reason,
         'metadata_json': evidence.metadata_json,
+        'signature_bundle_json': evidence.signature_bundle_json,
     }
 
 
@@ -724,6 +813,8 @@ async def download_evidence(
     evidence = await db.scalar(select(EvidenceItem).where(EvidenceItem.id == evidence_id, EvidenceItem.org_id == ctx.org_id))
     if evidence is None:
         raise HTTPException(status_code=404, detail='Evidence not found')
+    if evidence.scan_status != 'clean':
+        raise HTTPException(status_code=423, detail='Evidence quarantined')
 
     store = get_object_store()
     try:

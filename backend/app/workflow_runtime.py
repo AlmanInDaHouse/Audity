@@ -28,7 +28,9 @@ from app.models import (
 )
 from app.reporting import render_report_html, render_report_pdf
 from app.rules import ControlResult, calculate_risk, evaluate_controls
+from app.signing import sign_manifest
 from app.storage import get_object_store
+from app.tenancy import set_current_org
 
 
 @dataclass
@@ -48,8 +50,17 @@ def _severity_enum(value: str) -> SeverityEnum:
     return SeverityEnum.medium
 
 
-async def _update_run_progress(run_id: str, *, stage: str, status: AuditStatusEnum | None = None, data: dict | None = None) -> None:
+async def _update_run_progress(
+    run_id: str,
+    *,
+    org_id: str | None = None,
+    stage: str,
+    status: AuditStatusEnum | None = None,
+    data: dict | None = None,
+) -> None:
     async with SessionLocal() as db:
+        if org_id:
+            await set_current_org(db, org_id)
         run = await db.get(AuditRun, run_id)
         if run is None:
             return
@@ -65,8 +76,14 @@ async def _update_run_progress(run_id: str, *, stage: str, status: AuditStatusEn
 
 
 async def snapshot_integrations(input_data: AuditWorkflowInput) -> list[dict[str, Any]]:
-    await _update_run_progress(input_data.audit_run_id, stage='snapshot_integrations', status=AuditStatusEnum.running)
+    await _update_run_progress(
+        input_data.audit_run_id,
+        org_id=input_data.org_id,
+        stage='snapshot_integrations',
+        status=AuditStatusEnum.running,
+    )
     async with SessionLocal() as db:
+        await set_current_org(db, input_data.org_id)
         rows = (
             await db.execute(
                 select(Integration).where(
@@ -97,7 +114,7 @@ async def _github_headers(token: str) -> dict[str, str]:
 
 
 async def collect_github_evidence(input_data: AuditWorkflowInput, integrations: list[dict[str, Any]]) -> dict[str, Any]:
-    await _update_run_progress(input_data.audit_run_id, stage='collect_github_evidence')
+    await _update_run_progress(input_data.audit_run_id, org_id=input_data.org_id, stage='collect_github_evidence')
     settings = get_settings()
     github_int = next((i for i in integrations if i['provider'].lower() == 'github'), None)
     if github_int is None:
@@ -156,7 +173,7 @@ async def collect_github_evidence(input_data: AuditWorkflowInput, integrations: 
 
 
 async def collect_google_workspace_evidence(input_data: AuditWorkflowInput, integrations: list[dict[str, Any]]) -> dict[str, Any]:
-    await _update_run_progress(input_data.audit_run_id, stage='collect_google_workspace_evidence')
+    await _update_run_progress(input_data.audit_run_id, org_id=input_data.org_id, stage='collect_google_workspace_evidence')
     settings = get_settings()
     google_int = next((i for i in integrations if i['provider'].lower() in {'google_workspace', 'google'}), None)
     if google_int is None:
@@ -194,8 +211,9 @@ async def collect_google_workspace_evidence(input_data: AuditWorkflowInput, inte
 
 
 async def collect_manual_evidence_refs(input_data: AuditWorkflowInput) -> list[dict[str, Any]]:
-    await _update_run_progress(input_data.audit_run_id, stage='collect_manual_evidence')
+    await _update_run_progress(input_data.audit_run_id, org_id=input_data.org_id, stage='collect_manual_evidence')
     async with SessionLocal() as db:
+        await set_current_org(db, input_data.org_id)
         rows = (
             await db.execute(
                 select(EvidenceItem).where(
@@ -232,7 +250,7 @@ def _derive_remediation(results: list[ControlResult]) -> list[dict[str, str]]:
 
 
 async def evaluate_controls_activity(input_data: AuditWorkflowInput, evidence: dict[str, Any]) -> dict[str, Any]:
-    await _update_run_progress(input_data.audit_run_id, stage='evaluate_controls')
+    await _update_run_progress(input_data.audit_run_id, org_id=input_data.org_id, stage='evaluate_controls')
     controls = load_controls()
     results = evaluate_controls(controls, evidence)
     return {
@@ -242,8 +260,9 @@ async def evaluate_controls_activity(input_data: AuditWorkflowInput, evidence: d
 
 
 async def calculate_risk_activity(input_data: AuditWorkflowInput, control_eval: dict[str, Any]) -> dict[str, Any]:
-    await _update_run_progress(input_data.audit_run_id, stage='calculate_risk')
+    await _update_run_progress(input_data.audit_run_id, org_id=input_data.org_id, stage='calculate_risk')
     async with SessionLocal() as db:
+        await set_current_org(db, input_data.org_id)
         project = await db.get(Project, input_data.project_id)
         criticality = project.criticality.value if project else 'medium'
 
@@ -258,12 +277,13 @@ async def generate_report_activity(
     control_eval: dict[str, Any],
     risk: dict[str, Any],
 ) -> dict[str, Any]:
-    await _update_run_progress(input_data.audit_run_id, stage='generate_report')
+    await _update_run_progress(input_data.audit_run_id, org_id=input_data.org_id, stage='generate_report')
 
     findings = [item for item in control_eval['results'] if item['result'] != 'pass']
     remediation_tasks = _derive_remediation([ControlResult(**item) for item in control_eval['results']])
 
     async with SessionLocal() as db:
+        await set_current_org(db, input_data.org_id)
         project = await db.get(Project, input_data.project_id)
         project_name = project.name if project else 'Unknown'
         context = {
@@ -287,8 +307,29 @@ async def generate_report_activity(
     pdf_key = f'reports/{input_data.org_id}/{input_data.project_id}/{input_data.audit_run_id}.pdf'
     html_stored = await store.put_bytes(html_key, html.encode('utf-8'), 'text/html; charset=utf-8')
     pdf_stored = await store.put_bytes(pdf_key, pdf, 'application/pdf')
+    html_manifest = {
+        'type': 'report_html',
+        'org_id': input_data.org_id,
+        'project_id': input_data.project_id,
+        'audit_run_id': input_data.audit_run_id,
+        'sha256': html_stored.sha256,
+        'object_key': html_stored.key,
+        'generated_at': datetime.now(UTC).isoformat(),
+    }
+    pdf_manifest = {
+        'type': 'report_pdf',
+        'org_id': input_data.org_id,
+        'project_id': input_data.project_id,
+        'audit_run_id': input_data.audit_run_id,
+        'sha256': pdf_stored.sha256,
+        'object_key': pdf_stored.key,
+        'generated_at': datetime.now(UTC).isoformat(),
+    }
+    html_signature = await sign_manifest(input_data.org_id, html_manifest)
+    pdf_signature = await sign_manifest(input_data.org_id, pdf_manifest)
 
     async with SessionLocal() as db:
+        await set_current_org(db, input_data.org_id)
         html_ev = EvidenceItem(
             org_id=input_data.org_id,
             project_id=input_data.project_id,
@@ -299,6 +340,8 @@ async def generate_report_activity(
             object_key=html_stored.key,
             sha256=html_stored.sha256,
             metadata_json={'content_type': 'text/html'},
+            manifest_json=html_manifest,
+            signature_bundle_json=html_signature,
             created_by_user_id=input_data.actor_user_id,
         )
         pdf_ev = EvidenceItem(
@@ -311,6 +354,8 @@ async def generate_report_activity(
             object_key=pdf_stored.key,
             sha256=pdf_stored.sha256,
             metadata_json={'content_type': 'application/pdf', 'paired_html_evidence_id': None},
+            manifest_json=pdf_manifest,
+            signature_bundle_json=pdf_signature,
             created_by_user_id=input_data.actor_user_id,
         )
         db.add(html_ev)
@@ -324,6 +369,7 @@ async def generate_report_activity(
         'report_evidence_id': report_evidence_id,
         'findings': findings,
         'remediation_tasks': remediation_tasks,
+        'report_signature_bundle': pdf_signature,
     }
 
 
@@ -334,8 +380,9 @@ async def persist_results_activity(
     risk: dict[str, Any],
     report_meta: dict[str, Any],
 ) -> dict[str, Any]:
-    await _update_run_progress(input_data.audit_run_id, stage='persist_results')
+    await _update_run_progress(input_data.audit_run_id, org_id=input_data.org_id, stage='persist_results')
     async with SessionLocal() as db:
+        await set_current_org(db, input_data.org_id)
         run = await db.get(AuditRun, input_data.audit_run_id)
         if run is None:
             raise ValueError('AuditRun not found')
@@ -382,6 +429,7 @@ async def persist_results_activity(
         run.risk_score = risk['risk_score']
         run.risk_level = risk['risk_level']
         run.report_evidence_id = report_meta['report_evidence_id']
+        run.signature_bundle_json = report_meta.get('report_signature_bundle', {})
         run.status = AuditStatusEnum.completed
         run.progress_json = {'stage': 'completed', 'updated_at': datetime.now(UTC).isoformat()}
 
@@ -408,6 +456,7 @@ async def persist_results_activity(
 
 async def mark_audit_failed(input_data: AuditWorkflowInput, reason: str) -> None:
     async with SessionLocal() as db:
+        await set_current_org(db, input_data.org_id)
         run = await db.get(AuditRun, input_data.audit_run_id)
         if run is None:
             return

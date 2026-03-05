@@ -18,6 +18,8 @@ async def run_worker() -> None:
         workflows=[AuditRunWorkflow],
         activities=ACTIVITIES,
         workflow_runner=UnsandboxedWorkflowRunner(),
+        max_concurrent_activities=settings.temporal_max_concurrent_activities,
+        max_concurrent_workflow_tasks=settings.temporal_max_concurrent_workflow_tasks,
     )
     await worker.run()
 

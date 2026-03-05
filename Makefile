@@ -1,6 +1,6 @@
 PYTHON ?= python
 
-.PHONY: up down logs lint test test-unit test-integration migrate seed fmt demo-audit ci
+.PHONY: up down logs lint test test-unit test-integration migrate seed fmt demo-audit ci dev-up dev-test
 
 up:
 	docker compose up -d --build
@@ -42,3 +42,9 @@ ci:
 	$(MAKE) seed
 	$(MAKE) test
 	$(MAKE) demo-audit
+
+dev-up:
+	powershell -ExecutionPolicy Bypass -File scripts/dev_up.ps1
+
+dev-test:
+	powershell -ExecutionPolicy Bypass -File scripts/dev_test.ps1 -IncludeDemo

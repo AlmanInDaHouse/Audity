@@ -1,62 +1,80 @@
-# Audity MVP Architecture
+# Audity Enterprise Architecture
 
 ## Scope
-MVP funcional para auditoría normativa multi-tenant con flujo "1 click": ingesta de evidencias, evaluación, scoring de riesgo, informe HTML/PDF y remediación.
+Audity is a multi-tenant audit platform with enterprise controls enabled by feature flags. The stack includes FastAPI, Temporal, Postgres, Redis, MinIO, and Next.js, with optional enterprise profiles for IdP, Vault, AV, observability, backup, and WAF.
 
-## Contexto de dominio
-- Multi-tenant estricto desde el inicio: `Organization -> Project -> AuditRun`.
-- Marcos soportados por catálogos versionados: ISO27001, ENS, RGPD.
-- Evidencias en object store (MinIO S3-compatible) con metadata y hash SHA-256.
+## Core Components
+- `backend/`: FastAPI API, RBAC/ABAC authorization, SCIM server endpoints, signing, reporting, package export.
+- `worker/`: Temporal worker for audit workflows and heavy activities.
+- `frontend/`: Next.js UI for audit runs and enterprise controls.
+- `catalogs/`: versioned compliance catalogs and mappings.
+- `infra/`: reverse proxy, Keycloak realm, observability configs, Nginx WAF profile.
 
-## Decisiones clave (why this)
-- `JWT RS256 + JWKS mock OIDC`: permite integrarse como OIDC provider local sin depender de IdP externo en MVP.
-- `RBAC por membership`: cada request valida token y membership activa en DB para evitar privilegios obsoletos.
-- `Audit log append-only + hash chain`: dificulta manipulación y proporciona trazabilidad forense básica.
-- `Temporal para orquestación`: separa API síncrona del pipeline largo de auditoría y soporta retries/visibilidad.
-- `Fallback connectors`: si faltan credenciales reales en GitHub/Google, el run no se bloquea y queda trazado como mock.
-- `Catálogos YAML versionados`: desacopla legal/compliance del código y habilita trazabilidad histórica por checksum.
-- `Storage backend con modo memory`: facilita tests locales aislados sin MinIO, manteniendo interfaz S3 para runtime real.
+## Multi-Tenant Model
+- Tenant root: `Organization`.
+- Data hierarchy: `Organization -> Project -> AuditRun -> Findings/Remediation/Evidence`.
+- Application guardrails: every authenticated request sets `app.current_org_id` through dependency middleware.
+- Database guardrails: PostgreSQL RLS policies on org-scoped tables.
 
-## Seguridad-by-design aplicada
-- Aislamiento de tenant por `org_id` en todas las consultas de negocio.
-- Roles mínimos: `org_admin`, `auditor`, `client_viewer`.
-- Validación de inputs con Pydantic, allowlist MIME y límites de tamaño en uploads.
-- Rate limit global y sensible (`POST /projects/{id}/audit-runs` y `POST /projects/{id}/evidence/upload`).
-- Secretos por variables de entorno (`.env` local, no en código).
-- Headers de hardening HTTP (`X-Frame-Options`, `X-Content-Type-Options`, `CSP`, etc.).
+## Auth and Identity
+- Local/dev login: `/auth/mock/login` issuing JWT + refresh session.
+- Enterprise OIDC: JWKS validation supported via `OIDC_JWKS_URL` + issuer/audience checks.
+- Session security: refresh token rotation (`/auth/refresh`) and revocation (`/auth/logout`).
+- MFA policy: org security policy (`require_mfa_sensitive`) and global flag can enforce `mfa=true` claim on sensitive endpoints.
+- SCIM v2 server: `/scim/v2/Users`, `/scim/v2/Groups` with per-tenant bearer token managed by secret references.
 
-## Componentes
-- `/backend`: FastAPI + SQLAlchemy + Alembic + motor de reglas + reportes.
-- `/worker`: Temporal worker Python con activities del pipeline.
-- `/frontend`: Next.js mínimo para ejecutar y observar auditorías.
-- `/catalogs`: catálogos y mapping multi-marco versionados.
-- `/agent-rust`: scaffold para fase 2.
+## Secret Management
+- `SecretStore` abstraction:
+  - `env` backend for local/dev.
+  - `vault` backend for enterprise profile.
+- API stores references (`secret_ref`), not plaintext secrets.
+- Integration config blocks common plaintext secret keys (`token`, `password`, `secret`, `private_key`).
 
-## Flujo "1 click"
-1. `POST /projects/{id}/audit-runs` crea `AuditRun(queued)` y lanza workflow Temporal.
-2. Worker ejecuta: snapshot integraciones -> recolecta evidencias -> evalúa controles -> calcula riesgo -> genera reporte -> persiste findings/tasks.
-3. API expone estado y resultados por polling (`GET /projects/{id}/audit-runs/{run_id}`).
-4. Reporte final PDF se guarda en MinIO y se registra en `evidence_items` tipo `report`.
+## Data Integrity and Traceability
+- Audit log remains append-only with hash chain.
+- Evidence/report manifest + signature bundles (Ed25519) persisted in DB.
+- Signature verification endpoint: `/evidence/{id}/verify-signature`.
+- Retention and immutability metadata fields are stored on evidence rows.
 
-## Esquema de datos
-Tablas principales:
-- `organizations`, `users`, `memberships`
-- `projects`, `integrations`
-- `control_catalogs`
-- `audit_runs`, `findings`, `remediation_tasks`
-- `evidence_items`
-- `audit_log_entries`
+## Upload and Malware Controls
+- Strict MIME allowlist.
+- Upload size governed by org security policy + pricing plan.
+- SHA-256 computed on object write.
+- ClamAV scan integration:
+  - `clean`: downloadable.
+  - `infected` or `scan_error`: quarantined (`423` on download).
 
-## Riesgo y scoring
-- Severidad: low=1, medium=3, high=5
-- Resultado: pass=0, partial=0.5, fail=1
-- Criticidad proyecto: low=1, medium=1.5, high=2
-- Score final: normalización 0-100 y nivel low/medium/high por umbrales.
+## Observability
+- Prometheus metrics endpoint `/metrics` with:
+  - request counts and latency histogram.
+  - rate-limit hit counters.
+  - quarantined upload counters.
+- Optional OpenTelemetry tracing for FastAPI + SQLAlchemy.
+- `obs` profile: OTel collector, Prometheus, Grafana, Loki.
 
-## Fase 2 prevista
-- Sustituir mock OIDC por SSO real (Keycloak/Azure AD/Okta).
-- Expandir conectores (AWS/Azure/GCP/MDM/EDR/SIEM).
-- Agent Rust operativo para collectors distribuidos.
-- Firmado de evidencias e informes con clave privada custodiada.
-- Métricas/observabilidad avanzada (OTel + dashboard SLA de auditorías).
+## Resilience and Scale
+- Temporal activity retries and worker concurrency tuning.
+- Load test script (`scripts/load_test.js`) and chaos-lite recovery script (`scripts/chaos_lite.*`).
 
+## Enterprise Product Capabilities
+- Advanced RBAC + ABAC with role-permission overrides.
+- Approval/waiver flow for findings.
+- Remediation comments.
+- Outbound integration contract endpoints (Jira/ServiceNow/SIEM stubs).
+- Auditor package export ZIP with evidence metadata/signatures.
+- Pricing plan module gating (`/organizations/{org_id}/pricing-plan`).
+
+## Profiles in Docker Compose
+- `idp`: Keycloak dev IdP.
+- `vault`: Hashicorp Vault dev server.
+- `av`: ClamAV service.
+- `obs`: OTel + Prometheus + Grafana + Loki.
+- `backup`: recurring Postgres/MinIO backup jobs.
+- `waf`: Nginx reverse proxy with baseline rules/headers.
+
+## Security Baseline
+- CORS controlled at API layer.
+- Security headers middleware enabled.
+- Global and sensitive rate limiting using Redis fallback memory limiter.
+- Sensitive endpoints include org/user/IP in rate-limit keys.
+- Feature-flag rollout for all enterprise capabilities.

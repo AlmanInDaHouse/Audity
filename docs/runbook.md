@@ -1,53 +1,99 @@
-# Audity MVP Runbook
+# Audity Enterprise Runbook
 
-## Como arrancar
-1. Requisitos:
-   - Docker Desktop con `docker compose`.
-   - (Opcional) `make`. Si no esta instalado, usar comandos `docker compose` equivalentes.
-   - PowerShell 5+ para scripts de automatizacion en Windows.
-2. Levantar en limpio:
-   - `docker compose down -v`
-   - `docker compose up -d --build`
-3. Migrar y sembrar datos:
-   - `docker compose exec api uv run alembic upgrade head`
-   - `docker compose exec api uv run python -m app.scripts.seed_data`
-4. Comprobar salud:
-   - `docker compose ps`
-   - API: `http://localhost:58000/health`
+## 1) Baseline Startup
+### PowerShell (Windows)
+1. `./scripts/dev_up.ps1`
+2. `./scripts/dev_test.ps1`
+3. `./scripts/demo_audit.ps1`
 
-## Scripts PowerShell (Windows sin make)
-Comandos equivalentes listos en `scripts/`:
-- `.\scripts\down.ps1`
-- `.\scripts\up.ps1`
-- `.\scripts\migrate.ps1`
-- `.\scripts\seed.ps1`
-- `.\scripts\test.ps1 -Scope all` (tambien `unit` o `integration`)
-- `.\scripts\demo.ps1` (incluye verificacion de que `git status` no cambia tras la demo)
+### Bash (Linux/macOS)
+1. `./scripts/dev_up.sh`
+2. `./scripts/dev_test.sh`
+3. `./scripts/demo_audit.sh`
 
-## Estrategia de tests
-Se separa en dos capas:
-1. Unit tests (`sqlite`): `pytest -q tests`
-2. Integration tests (`postgres` real + API live): `pytest -q tests_integration`
+## 2) Manual Equivalent Commands
+1. `docker compose down -v`
+2. `docker compose up -d --build`
+3. `docker compose exec api uv run alembic upgrade head`
+4. `docker compose exec api uv run python -m app.scripts.seed_data`
+5. `docker compose exec api uv run pytest -q tests`
+6. `docker compose exec api uv run pytest -q tests_integration`
+7. `docker compose exec api uv run python -m app.scripts.demo_audit`
 
-El pipeline ejecuta ambas capas.
+## 3) Enterprise Profiles
+- IdP: `docker compose --profile idp up -d keycloak`
+- Vault: `docker compose --profile vault up -d vault`
+- AV: `docker compose --profile av up -d clamav`
+- Observability: `docker compose --profile obs up -d otel-collector prometheus loki grafana`
+- Backup jobs: `docker compose --profile backup up -d postgres-backup minio-backup`
+- WAF proxy: `docker compose --profile waf up -d waf`
 
-## Como ejecutar demo
-1. Ejecutar demo end-to-end:
-   - `docker compose exec api uv run python -m app.scripts.demo_audit`
-   - o `.\scripts\demo.ps1` para validar ademas que no deja artefactos en git.
-2. La demo debe mostrar:
-   - Creacion de `AuditRun`.
-   - Estados `queued -> running -> completed`.
-   - Descarga de reporte PDF y `report_evidence_id`.
-3. Verificacion opcional por API:
-   - `GET /projects/{project_id}/audit-runs/{run_id}`
-   - `GET /projects/{project_id}/audit-runs/{run_id}/findings`
-   - `GET /projects/{project_id}/audit-runs/{run_id}/remediation-tasks`
-   - `GET /evidence/{evidence_id}/download`
+## 4) Security Operations
+### Secret management
+1. Create secret reference:
+   - `POST /organizations/{org_id}/secrets`
+2. Rotate secret:
+   - `POST /organizations/{org_id}/secrets/rotate`
+3. Validate secret:
+   - `POST /organizations/{org_id}/secrets/validate`
 
-## Que queda para fase 2
-1. SSO real (Keycloak/Azure AD/Okta) en lugar de login mock.
-2. Conectores reales adicionales (AWS/Azure/GCP/MDM/EDR/SIEM).
-3. Agent Rust operativo para collectors distribuidos.
-4. Firma criptografica de evidencias e informes con gestion de claves.
-5. Observabilidad avanzada (metricas, trazas y SLO de auditorias).
+### SCIM provisioning
+1. Create tenant SCIM token:
+   - `POST /organizations/{org_id}/scim/tokens`
+2. Provision users/groups:
+   - `POST /scim/v2/Users`
+   - `PATCH /scim/v2/Groups/{role}`
+
+### MFA policy
+1. Set security policy:
+   - `PUT /organizations/{org_id}/security-policy`
+2. Enforce for sensitive endpoints using `mfa=true` token claim.
+
+## 5) Backup and Restore
+### Backup
+- PowerShell: `./scripts/backup.ps1`
+- Bash: `./scripts/backup.sh`
+
+### Restore
+- PowerShell: `./scripts/restore.ps1 -BackupDir backups/<timestamp>`
+- Bash: `./scripts/restore.sh backups/<timestamp>`
+
+### Restore Smoke Check
+1. API health: `GET /health`
+2. Login + list projects for seeded org.
+3. Run `demo_audit` and confirm status completes.
+
+## 6) Reliability Exercises
+### Load test (k6)
+- `k6 run scripts/load_test.js -e ORG_ID=<org_id> -e PROJECT_ID=<project_id> -e BASE_URL=http://localhost:58000`
+
+### Chaos-lite
+- PowerShell: `./scripts/chaos_lite.ps1`
+- Bash: `./scripts/chaos_lite.sh`
+
+## 7) Incident Procedures
+### Temporal down
+1. Verify `temporal` container health.
+2. Restart worker and temporal services.
+3. Requeue failed runs if needed.
+
+### Database restore
+1. Stop API/worker writes.
+2. Run restore script.
+3. Apply migrations and run smoke checks.
+
+### MinIO restore
+1. Restore object backup.
+2. Verify report/evidence downloads.
+3. Validate signatures using `/evidence/{id}/verify-signature`.
+
+## 8) SLO Baseline
+- Availability target: 99.9% monthly.
+- API p95 latency alert threshold: >1500ms sustained 15m.
+- Error-rate alert threshold: >5% sustained 5m.
+- Quarantine spike alert: abnormal increase in `audity_upload_quarantined_total`.
+
+## 9) Remaining Items for Full Compliance/Legal Certification
+- External legal review and signed DPA/SLA/Terms.
+- Third-party pentest execution and formal attestation.
+- SOC2/ISO certification process (this runbook only provides readiness kit artifacts).

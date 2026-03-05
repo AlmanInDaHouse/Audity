@@ -6,6 +6,7 @@ from app.models import AuditStatusEnum, CriticalityEnum, FindingStatusEnum, Resu
 class LoginRequest(BaseModel):
     email: str
     org_id: str
+    mfa: bool = False
 
 
 class TokenResponse(BaseModel):
@@ -117,6 +118,7 @@ class AuditRunOut(BaseModel):
     risk_score: float | None
     risk_level: str | None
     report_evidence_id: str | None
+    signature_bundle_json: dict | None = None
 
 
 class FindingOut(BaseModel):
@@ -145,6 +147,9 @@ class EvidenceOut(BaseModel):
     object_key: str
     sha256: str
     metadata_json: dict
+    scan_status: str | None = None
+    quarantine_reason: str | None = None
+    signature_bundle_json: dict | None = None
 
 
 class RemediationTaskOut(BaseModel):

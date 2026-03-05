@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
+import secrets
 from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from typing import Any
@@ -22,6 +24,8 @@ class TokenClaims(BaseModel):
     role: str
     iss: str
     exp: int
+    sid: str | None = None
+    mfa: bool | None = None
 
 
 def _b64url(data: bytes) -> str:
@@ -41,9 +45,20 @@ class OIDCSigner:
             self.private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         self.public_key = self.private_key.public_key()
 
-    def token(self, *, sub: str, email: str, org_id: str, role: str) -> str:
+    def token(
+        self,
+        *,
+        sub: str,
+        email: str,
+        org_id: str,
+        role: str,
+        sid: str | None = None,
+        mfa: bool = False,
+        ttl_minutes: int | None = None,
+    ) -> str:
         settings = get_settings()
-        exp = datetime.now(UTC) + timedelta(hours=8)
+        ttl = ttl_minutes if ttl_minutes is not None else settings.access_token_ttl_minutes
+        exp = datetime.now(UTC) + timedelta(minutes=ttl)
         payload = {
             'sub': sub,
             'email': email,
@@ -51,7 +66,11 @@ class OIDCSigner:
             'role': role,
             'iss': settings.oidc_issuer,
             'exp': int(exp.timestamp()),
+            'sid': sid,
+            'mfa': mfa,
         }
+        if settings.oidc_audience:
+            payload['aud'] = settings.oidc_audience
         return jwt.encode(payload, self.private_pem, algorithm='RS256', headers={'kid': self.kid})
 
     @property
@@ -89,10 +108,50 @@ class OIDCSigner:
     def decode(self, token: str) -> TokenClaims:
         settings = get_settings()
         try:
-            payload = jwt.decode(token, self.public_pem, algorithms=['RS256'], issuer=settings.oidc_issuer)
+            options = {'verify_aud': bool(settings.oidc_audience)}
+            payload = jwt.decode(
+                token,
+                self.public_pem,
+                algorithms=['RS256'],
+                issuer=settings.oidc_issuer,
+                audience=settings.oidc_audience if settings.oidc_audience else None,
+                options=options,
+            )
         except InvalidTokenError as exc:
             raise ValueError(str(exc)) from exc
         return TokenClaims.model_validate(payload)
+
+
+class OIDCVerifier:
+    def __init__(self) -> None:
+        self.settings = get_settings()
+        self._jwks = jwt.PyJWKClient(self.settings.oidc_jwks_url) if self.settings.oidc_jwks_url else None
+
+    def decode(self, token: str) -> TokenClaims:
+        if self._jwks is None:
+            return get_signer().decode(token)
+        try:
+            signing_key = self._jwks.get_signing_key_from_jwt(token).key
+            options = {'verify_aud': bool(self.settings.oidc_audience)}
+            payload = jwt.decode(
+                token,
+                signing_key,
+                algorithms=['RS256'],
+                issuer=self.settings.oidc_issuer,
+                audience=self.settings.oidc_audience if self.settings.oidc_audience else None,
+                options=options,
+            )
+        except Exception as exc:
+            raise ValueError(str(exc)) from exc
+        return TokenClaims.model_validate(payload)
+
+
+def hash_refresh_token(token: str) -> str:
+    return hashlib.sha256(token.encode('utf-8')).hexdigest()
+
+
+def new_refresh_token() -> str:
+    return secrets.token_urlsafe(48)
 
 
 def _burl(raw: bytes) -> str:
@@ -102,6 +161,11 @@ def _burl(raw: bytes) -> str:
 @lru_cache(maxsize=1)
 def get_signer() -> OIDCSigner:
     return OIDCSigner()
+
+
+@lru_cache(maxsize=1)
+def get_oidc_verifier() -> OIDCVerifier:
+    return OIDCVerifier()
 
 
 def jwks_json() -> str:

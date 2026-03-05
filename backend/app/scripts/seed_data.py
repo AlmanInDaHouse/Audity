@@ -4,7 +4,17 @@ from sqlalchemy import select
 
 from app.catalog_engine import compute_catalog_checksum
 from app.db import SessionLocal
-from app.models import ControlCatalog, CriticalityEnum, Membership, Organization, Project, RoleEnum, User
+from app.models import (
+    ControlCatalog,
+    CriticalityEnum,
+    Membership,
+    OrgSecurityPolicy,
+    Organization,
+    PricingPlan,
+    Project,
+    RoleEnum,
+    User,
+)
 
 
 async def seed() -> None:
@@ -31,6 +41,8 @@ async def seed() -> None:
                 Membership(org_id=org.id, user_id=viewer.id, role=RoleEnum.client_viewer),
             ]
         )
+        db.add(OrgSecurityPolicy(org_id=org.id))
+        db.add(PricingPlan(org_id=org.id))
 
         project = Project(
             org_id=org.id,

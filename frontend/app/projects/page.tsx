@@ -34,6 +34,7 @@ export default function ProjectsPage() {
       <div className="card">
         <h1>Projects</h1>
         <p>Run and monitor compliance audits.</p>
+        <p><Link href="/enterprise">Go to enterprise settings</Link></p>
         {error && <p style={{ color: '#b91c1c' }}>{error}</p>}
         {projects.length === 0 && <p>No projects found.</p>}
         {projects.map((project) => (

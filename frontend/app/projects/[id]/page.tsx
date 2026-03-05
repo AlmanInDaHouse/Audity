@@ -29,6 +29,7 @@ export default function ProjectDetailPage() {
   const [findings, setFindings] = useState<Finding[]>([]);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [packageId, setPackageId] = useState('');
 
   async function startRun() {
     const { token } = getStoredAuth();
@@ -94,6 +95,20 @@ export default function ProjectDetailPage() {
     window.URL.revokeObjectURL(url);
   }
 
+  async function exportPackage() {
+    if (!run) return;
+    const { token } = getStoredAuth();
+    try {
+      const res = await apiFetch(`/projects/${projectId}/audit-runs/${run.id}/export-package`, token, {
+        method: 'POST',
+      });
+      const data = await res.json();
+      setPackageId(data.package_id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not export package');
+    }
+  }
+
   return (
     <main>
       <div className="card">
@@ -110,6 +125,8 @@ export default function ProjectDetailPage() {
           <p>Stage: {String(run.progress_json?.stage || 'n/a')}</p>
           <p>Risk: {run.risk_score ?? '-'} ({run.risk_level ?? '-'})</p>
           {run.report_evidence_id && <button className="secondary" onClick={downloadReport}>Download PDF report</button>}
+          {run.status === 'completed' && <button className="secondary" onClick={exportPackage}>Export auditor package</button>}
+          {packageId && <p>Package generated: <strong>{packageId}</strong></p>}
         </div>
       )}
 
